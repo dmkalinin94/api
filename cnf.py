@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import logging
+<<<<<<< codex/create-python-api-daemon-for-ad-to-ktalk-resolution-idwlnp
+=======
 import os
+>>>>>>> test
 import re
 from logging.handlers import RotatingFileHandler
 from typing import Any
@@ -36,6 +39,28 @@ CONFIG: dict[str, Any] = {
     "request_timeout": 15,
     "log_file": "/tmp/ktolkapi.log",
     "log_file_size": "10Mb",
+<<<<<<< codex/create-python-api-daemon-for-ad-to-ktalk-resolution-idwlnp
+    "log_backup_count": 5,
+    "log_format": "%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    "log_datefmt": "%Y-%m-%d %H:%M:%S",
+
+    # API
+    "api_title": "AD -> KTalk mention resolver",
+    "api_version": "1.0.0",
+    "api_resolve_path": "/resolve",
+    "api_query_param_login": "ad_login",
+    "api_bad_request_message": "at least one ad_login query parameter is required",
+    "database_unavailable_message": "Database connection failed",
+    "ldap_unavailable_message": "Active Directory connection failed",
+    "ktalk_unavailable_message": "Kontur Talk lookup failed",
+
+    # KTalk API request defaults
+    "ktalk_limit": 15,
+    "ktalk_user_agent": "autoalerter/1.0",
+}
+
+
+=======
 }
 
 
@@ -79,6 +104,7 @@ def apply_env_overrides() -> None:
             CONFIG[conf_key] = raw
 
 
+>>>>>>> test
 def parse_log_file_size(value: str) -> int:
     text = str(value or "").strip()
     match = re.fullmatch(r"(\d+)\s*([kKmMgG]?[bB])", text)
@@ -121,7 +147,10 @@ def build_safe_pg_dsn_for_logs(dsn: str) -> str:
     return f"postgresql://{user_part}{host}:{port}/{dbname}"
 
 
+<<<<<<< codex/create-python-api-daemon-for-ad-to-ktalk-resolution-idwlnp
+=======
 apply_env_overrides()
+>>>>>>> test
 PG_CONNECT_PARAMS = parse_pg_dsn(CONFIG["pg_dsn"])
 
 
@@ -139,12 +168,21 @@ def get_logger() -> logging.Logger:
     handler = RotatingFileHandler(
         filename=str(CONFIG.get("log_file", "/tmp/ktolkapi.log")),
         maxBytes=max_bytes,
+<<<<<<< codex/create-python-api-daemon-for-ad-to-ktalk-resolution-idwlnp
+        backupCount=int(CONFIG.get("log_backup_count", 5)),
+        encoding="utf-8",
+    )
+    formatter = logging.Formatter(
+        fmt=str(CONFIG.get("log_format", "%(asctime)s | %(levelname)s | %(name)s | %(message)s")),
+        datefmt=str(CONFIG.get("log_datefmt", "%Y-%m-%d %H:%M:%S")),
+=======
         backupCount=5,
         encoding="utf-8",
     )
     formatter = logging.Formatter(
         fmt="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
+>>>>>>> test
     )
     handler.setFormatter(formatter)
     logger.addHandler(handler)
