@@ -10,14 +10,11 @@ from cnf import CONFIG, build_safe_pg_dsn_for_logs, get_logger
 from db_worker import DatabaseUnavailableError, fetch_mapped_users_by_logins, upsert_user_mappings
 from ktalk_worker import KTalkUnavailableError, find_ktalk_match_for_ad_user
 
-<<<<<<< codex/create-python-api-daemon-for-ad-to-ktalk-resolution-idwlnp
 app = FastAPI(
     title=str(CONFIG.get("api_title", "AD -> KTalk mention resolver")),
     version=str(CONFIG.get("api_version", "1.0.0")),
 )
-=======
 app = FastAPI(title="AD -> KTalk mention resolver", version="1.0.0")
->>>>>>> test
 logger = get_logger()
 
 
@@ -72,16 +69,6 @@ def startup_log() -> None:
     )
 
 
-<<<<<<< codex/create-python-api-daemon-for-ad-to-ktalk-resolution-idwlnp
-@app.get(str(CONFIG.get("api_resolve_path", "/resolve")))
-def resolve_users(request: Request):
-    login_param = str(CONFIG.get("api_query_param_login", "ad_login"))
-    raw_logins = request.query_params.getlist(login_param)
-    if not raw_logins:
-        return error_response(
-            "bad_request",
-            str(CONFIG.get("api_bad_request_message", "at least one ad_login query parameter is required")),
-=======
 @app.get("/resolve")
 def resolve_users(request: Request):
     raw_logins = request.query_params.getlist("ad_login")
@@ -89,7 +76,6 @@ def resolve_users(request: Request):
         return error_response(
             "bad_request",
             "at least one ad_login query parameter is required",
->>>>>>> test
             400,
         )
 
@@ -97,11 +83,7 @@ def resolve_users(request: Request):
     if not normalized:
         return error_response(
             "bad_request",
-<<<<<<< codex/create-python-api-daemon-for-ad-to-ktalk-resolution-idwlnp
-            str(CONFIG.get("api_bad_request_message", "at least one ad_login query parameter is required")),
-=======
             "at least one ad_login query parameter is required",
->>>>>>> test
             400,
         )
 
@@ -116,15 +98,12 @@ def resolve_users(request: Request):
     try:
         db_found = fetch_mapped_users_by_logins(normalized)
     except DatabaseUnavailableError:
-<<<<<<< codex/create-python-api-daemon-for-ad-to-ktalk-resolution-idwlnp
         return error_response(
             "database_unavailable",
             str(CONFIG.get("database_unavailable_message", "Database connection failed")),
             503,
         )
-=======
         return error_response("database_unavailable", "Database connection failed", 503)
->>>>>>> test
 
     missing_after_db = _to_not_found(normalized, db_found)
     logger.info("DB search complete found=%s missing=%s", len(db_found), len(missing_after_db))
@@ -151,15 +130,12 @@ def resolve_users(request: Request):
     try:
         ad_users = fetch_ad_users_batch(missing_after_db)
     except LDAPUnavailableError:
-<<<<<<< codex/create-python-api-daemon-for-ad-to-ktalk-resolution-idwlnp
         return error_response(
             "ldap_unavailable",
             str(CONFIG.get("ldap_unavailable_message", "Active Directory connection failed")),
             503,
         )
-=======
         return error_response("ldap_unavailable", "Active Directory connection failed", 503)
->>>>>>> test
 
     records_to_upsert: list[dict] = []
     newly_found: dict[str, dict[str, str]] = {}
@@ -188,15 +164,12 @@ def resolve_users(request: Request):
             try:
                 match = find_ktalk_match_for_ad_user(ad_user)
             except KTalkUnavailableError:
-<<<<<<< codex/create-python-api-daemon-for-ad-to-ktalk-resolution-idwlnp
                 return error_response(
                     "ktalk_unavailable",
                     str(CONFIG.get("ktalk_unavailable_message", "Kontur Talk lookup failed")),
                     503,
                 )
-=======
                 return error_response("ktalk_unavailable", "Kontur Talk lookup failed", 503)
->>>>>>> test
 
             if match and match.mention_id:
                 record["ktalk_mention_id"] = match.mention_id
@@ -219,15 +192,12 @@ def resolve_users(request: Request):
         upsert_count = upsert_user_mappings(records_to_upsert)
         logger.info("DB upsert done affected=%s", upsert_count)
     except DatabaseUnavailableError:
-<<<<<<< codex/create-python-api-daemon-for-ad-to-ktalk-resolution-idwlnp
         return error_response(
             "database_unavailable",
             str(CONFIG.get("database_unavailable_message", "Database connection failed")),
             503,
         )
-=======
         return error_response("database_unavailable", "Database connection failed", 503)
->>>>>>> test
 
     all_found = {
         **{

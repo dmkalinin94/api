@@ -19,11 +19,7 @@ pip install -r requirements.txt
 - Kontur Talk (`ktalk_base_url`, `ktalk_bearer_token`, `ktalk_host`, `ktalk_talk_host`)
 - Runtime (`verify_ssl`, `request_timeout`, `log_file`, `log_file_size`)
 
-<<<<<<< codex/create-python-api-daemon-for-ad-to-ktalk-resolution-idwlnp
-> В проекте все рабочие переменные вынесены в `cnf.py` (в `CONFIG`), а модули читают значения только оттуда.
-=======
 Также поддерживаются env-переопределения (например, `KTOLKAPI_PG_DSN`, `KTOLKAPI_LOG_FILE`).
->>>>>>> test
 
 ## Ручной запуск API
 

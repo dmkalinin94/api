@@ -59,11 +59,7 @@ def search_ktalk_users(
         "authorization": bearer,
         "talk-host": talk_host,
         "host": host,
-<<<<<<< codex/create-python-api-daemon-for-ad-to-ktalk-resolution-idwlnp
-        "user-agent": str(CONFIG.get("ktalk_user_agent", "autoalerter/1.0")),
-=======
         "user-agent": "autoalerter/1.0",
->>>>>>> test
     }
 
     try:
@@ -130,9 +126,5 @@ def find_ktalk_match_for_ad_user(ad_user: ADUser) -> KTalkUser | None:
         bearer_token=CONFIG["ktalk_bearer_token"],
         verify_ssl=bool(CONFIG.get("verify_ssl", True)),
         request_timeout=int(CONFIG.get("request_timeout", 15)),
-<<<<<<< codex/create-python-api-daemon-for-ad-to-ktalk-resolution-idwlnp
-        limit=int(CONFIG.get("ktalk_limit", 15)),
-=======
->>>>>>> test
     )
     return match_ktalk_user_strict(ad_user, candidates)

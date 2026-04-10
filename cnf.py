@@ -3,10 +3,7 @@
 from __future__ import annotations
 
 import logging
-<<<<<<< codex/create-python-api-daemon-for-ad-to-ktalk-resolution-idwlnp
-=======
 import os
->>>>>>> test
 import re
 from logging.handlers import RotatingFileHandler
 from typing import Any
@@ -39,7 +36,6 @@ CONFIG: dict[str, Any] = {
     "request_timeout": 15,
     "log_file": "/tmp/ktolkapi.log",
     "log_file_size": "10Mb",
-<<<<<<< codex/create-python-api-daemon-for-ad-to-ktalk-resolution-idwlnp
     "log_backup_count": 5,
     "log_format": "%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     "log_datefmt": "%Y-%m-%d %H:%M:%S",
@@ -58,29 +54,6 @@ CONFIG: dict[str, Any] = {
     "ktalk_limit": 15,
     "ktalk_user_agent": "autoalerter/1.0",
 }
-
-
-=======
-}
-
-
-ENV_TO_CONFIG = {
-    "KTOLKAPI_PG_DSN": "pg_dsn",
-    "KTOLKAPI_TABLE_NAME": "table_name",
-    "KTOLKAPI_AD_HOST": "ad_host",
-    "KTOLKAPI_AD_USER": "ad_user",
-    "KTOLKAPI_AD_PASSWORD": "ad_password",
-    "KTOLKAPI_AD_BASE_DN": "ad_base_dn",
-    "KTOLKAPI_KTALK_BASE_URL": "ktalk_base_url",
-    "KTOLKAPI_KTALK_BEARER_TOKEN": "ktalk_bearer_token",
-    "KTOLKAPI_KTALK_HOST": "ktalk_host",
-    "KTOLKAPI_KTALK_TALK_HOST": "ktalk_talk_host",
-    "KTOLKAPI_VERIFY_SSL": "verify_ssl",
-    "KTOLKAPI_REQUEST_TIMEOUT": "request_timeout",
-    "KTOLKAPI_LOG_FILE": "log_file",
-    "KTOLKAPI_LOG_FILE_SIZE": "log_file_size",
-}
-
 
 def _cast_bool(value: str) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
@@ -104,7 +77,6 @@ def apply_env_overrides() -> None:
             CONFIG[conf_key] = raw
 
 
->>>>>>> test
 def parse_log_file_size(value: str) -> int:
     text = str(value or "").strip()
     match = re.fullmatch(r"(\d+)\s*([kKmMgG]?[bB])", text)
@@ -147,10 +119,7 @@ def build_safe_pg_dsn_for_logs(dsn: str) -> str:
     return f"postgresql://{user_part}{host}:{port}/{dbname}"
 
 
-<<<<<<< codex/create-python-api-daemon-for-ad-to-ktalk-resolution-idwlnp
-=======
 apply_env_overrides()
->>>>>>> test
 PG_CONNECT_PARAMS = parse_pg_dsn(CONFIG["pg_dsn"])
 
 
@@ -168,21 +137,18 @@ def get_logger() -> logging.Logger:
     handler = RotatingFileHandler(
         filename=str(CONFIG.get("log_file", "/tmp/ktolkapi.log")),
         maxBytes=max_bytes,
-<<<<<<< codex/create-python-api-daemon-for-ad-to-ktalk-resolution-idwlnp
         backupCount=int(CONFIG.get("log_backup_count", 5)),
         encoding="utf-8",
     )
     formatter = logging.Formatter(
         fmt=str(CONFIG.get("log_format", "%(asctime)s | %(levelname)s | %(name)s | %(message)s")),
         datefmt=str(CONFIG.get("log_datefmt", "%Y-%m-%d %H:%M:%S")),
-=======
         backupCount=5,
         encoding="utf-8",
     )
     formatter = logging.Formatter(
         fmt="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
->>>>>>> test
     )
     handler.setFormatter(formatter)
     logger.addHandler(handler)
