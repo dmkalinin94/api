@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from urllib.parse import quote
 
 import requests
 from requests import RequestException
@@ -41,16 +40,6 @@ def build_ktalk_bearer(token: str) -> str:
     return f"Bearer {token}"
 
 
-def _build_ktalk_headers(talk_host: str, host: str, bearer: str) -> dict[str, str]:
-    return {
-        "accept": "application/json",
-        "authorization": bearer,
-        "talk-host": talk_host,
-        "host": host,
-        "user-agent": str(CONFIG.get("ktalk_user_agent", "autoalerter/1.0")),
-    }
-
-
 def search_ktalk_users(
     query: str,
     base_url: str,
@@ -65,7 +54,13 @@ def search_ktalk_users(
     if not base_url or not talk_host or not bearer:
         return []
 
-    headers = _build_ktalk_headers(talk_host=talk_host, host=host, bearer=bearer)
+    headers = {
+        "accept": "application/json",
+        "authorization": bearer,
+        "talk-host": talk_host,
+        "host": host,
+        "user-agent": "autoalerter/1.0",
+    }
 
     try:
         response = requests.get(
@@ -131,56 +126,5 @@ def find_ktalk_match_for_ad_user(ad_user: ADUser) -> KTalkUser | None:
         bearer_token=CONFIG["ktalk_bearer_token"],
         verify_ssl=bool(CONFIG.get("verify_ssl", True)),
         request_timeout=int(CONFIG.get("request_timeout", 15)),
-        limit=int(CONFIG.get("ktalk_limit", 15)),
     )
     return match_ktalk_user_strict(ad_user, candidates)
-
-
-def fetch_ktalk_profile_by_mention_id(mention_id: str) -> dict:
-    bearer = build_ktalk_bearer(str(CONFIG.get("ktalk_bearer_token", "")))
-    homeserver = str(CONFIG.get("ktalk_homeserver", "")).rstrip("/")
-    talk_host = str(CONFIG.get("ktalk_talk_host", ""))
-    host = str(CONFIG.get("ktalk_host", ""))
-    if not bearer or not homeserver:
-        return {}
-
-    encoded_mention_id = quote(str(mention_id or "").strip(), safe="")
-    url = f"{homeserver}/_matrix/client/r0/profile/{encoded_mention_id}"
-    headers = _build_ktalk_headers(talk_host=talk_host, host=host, bearer=bearer)
-
-    try:
-        response = requests.get(
-            url,
-            headers=headers,
-            verify=bool(CONFIG.get("verify_ssl", True)),
-            timeout=int(CONFIG.get("request_timeout", 15)),
-        )
-    except RequestException as exc:
-        logger.exception("Kontur Talk profile request failed mention_id=%s", mention_id)
-        raise KTalkUnavailableError("Kontur Talk lookup failed") from exc
-
-    if not response.ok:
-        logger.error("Kontur Talk profile non-OK status=%s mention_id=%s", response.status_code, mention_id)
-        return {}
-
-    try:
-        payload = response.json()
-    except ValueError as exc:
-        logger.exception("Kontur Talk profile invalid JSON mention_id=%s", mention_id)
-        raise KTalkUnavailableError("Kontur Talk lookup failed") from exc
-
-    return payload if isinstance(payload, dict) else {}
-
-
-def resolve_ad_login_by_mention_id(mention_id: str, profile: dict | None = None) -> str | None:
-    profile = profile if profile is not None else fetch_ktalk_profile_by_mention_id(mention_id)
-    talk_domain_login = str(profile.get("talk_domain_login", "") or "").strip().lower()
-    if talk_domain_login:
-        return talk_domain_login
-
-    email = str(profile.get("email", "") or "").strip().lower()
-    if "@" in email:
-        candidate = email.split("@", 1)[0].strip().lower()
-        if candidate:
-            return candidate
-    return None

@@ -1,27 +1,20 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from ad_worker import LDAPUnavailableError, fetch_ad_users_batch
 from cnf import CONFIG, build_safe_pg_dsn_for_logs, get_logger
-from db_worker import (
-    DatabaseUnavailableError,
-    fetch_mapped_users_by_logins,
-    fetch_mapped_users_by_mention_ids,
-    upsert_user_mappings,
-)
-from ktalk_worker import (
-    KTalkUnavailableError,
-    fetch_ktalk_profile_by_mention_id,
-    find_ktalk_match_for_ad_user,
-    resolve_ad_login_by_mention_id,
-)
+from db_worker import DatabaseUnavailableError, fetch_mapped_users_by_logins, upsert_user_mappings
+from ktalk_worker import KTalkUnavailableError, find_ktalk_match_for_ad_user
 
 app = FastAPI(
     title=str(CONFIG.get("api_title", "AD -> KTalk mention resolver")),
     version=str(CONFIG.get("api_version", "1.0.0")),
 )
+app = FastAPI(title="AD -> KTalk mention resolver", version="1.0.0")
 logger = get_logger()
 
 
@@ -61,29 +54,8 @@ def _extract_client_ip(request: Request) -> str:
     return "unknown"
 
 
-def normalize_mention_ids(values: list[str]) -> list[str]:
-    result: list[str] = []
-    for value in values:
-        mention_id = str(value or "").strip().lower()
-        if mention_id and mention_id not in result:
-            result.append(mention_id)
-    return result
-
-
-def _upsert_record_from_resolved(ad_login: str, ad_user, mention_id: str, ktalk_display_name: str, ktalk_post: str) -> dict:
-    return {
-        "ad_login": ad_login,
-        "ad_first_name": ad_user.first_name,
-        "ad_last_name": ad_user.last_name,
-        "ad_display_name": ad_user.display_name,
-        "ad_title": ad_user.title,
-        "ad_active": ad_user.active,
-        "ktalk_mention_id": mention_id,
-        "ktalk_display_name": ktalk_display_name,
-        "ktalk_post": ktalk_post,
-        "ktalk_matched": True,
-        "ktalk_deactivated": False,
-    }
+def _to_not_found(requested: Iterable[str], found: dict[str, object]) -> list[str]:
+    return [item for item in requested if item not in found]
 
 
 @app.on_event("startup")
@@ -97,35 +69,21 @@ def startup_log() -> None:
     )
 
 
-@app.get(str(CONFIG.get("api_resolve_path", "/resolve")))
+@app.get("/resolve")
 def resolve_users(request: Request):
-    login_param = str(CONFIG.get("api_query_param_login", "ad_login"))
-    mention_param = str(CONFIG.get("api_query_param_mention_id", "ktalk_mention_id"))
-    raw_logins = request.query_params.getlist(login_param)
-    raw_mention_ids = request.query_params.getlist(mention_param)
-    if not raw_logins and not raw_mention_ids:
+    raw_logins = request.query_params.getlist("ad_login")
+    if not raw_logins:
         return error_response(
             "bad_request",
-            str(
-                CONFIG.get(
-                    "api_bad_request_message",
-                    "at least one ad_login or ktalk_mention_id query parameter is required",
-                )
-            ),
+            "at least one ad_login query parameter is required",
             400,
         )
 
-    normalized_logins = normalize_logins(raw_logins)
-    normalized_mention_ids = normalize_mention_ids(raw_mention_ids)
-    if not normalized_logins and not normalized_mention_ids:
+    normalized = normalize_logins(raw_logins)
+    if not normalized:
         return error_response(
             "bad_request",
-            str(
-                CONFIG.get(
-                    "api_bad_request_message",
-                    "at least one ad_login or ktalk_mention_id query parameter is required",
-                )
-            ),
+            "at least one ad_login query parameter is required",
             400,
         )
 
@@ -134,57 +92,73 @@ def resolve_users(request: Request):
         "Incoming request ip=%s endpoint=%s normalized_logins=%s",
         client_ip,
         request.url.path,
-        normalized_logins,
+        normalized,
     )
 
     try:
-        db_found_by_login = fetch_mapped_users_by_logins(normalized_logins)
-        db_found_by_mention = fetch_mapped_users_by_mention_ids(normalized_mention_ids)
+        db_found = fetch_mapped_users_by_logins(normalized)
     except DatabaseUnavailableError:
         return error_response(
             "database_unavailable",
             str(CONFIG.get("database_unavailable_message", "Database connection failed")),
             503,
         )
+        return error_response("database_unavailable", "Database connection failed", 503)
 
-    found_users: dict[str, dict[str, str]] = {}
-    for row in list(db_found_by_login.values()) + list(db_found_by_mention.values()):
-        found_users[row.ad_login] = {
-            "ad_login": row.ad_login,
-            "ktalk_mention_id": row.ktalk_mention_id,
-            "ad_name": row.ad_name,
+    missing_after_db = _to_not_found(normalized, db_found)
+    logger.info("DB search complete found=%s missing=%s", len(db_found), len(missing_after_db))
+
+    if not missing_after_db:
+        response = {
+            "count_requested": len(raw_logins),
+            "count_normalized": len(normalized),
+            "count_found": len(db_found),
+            "users": [
+                {
+                    "ad_login": row.ad_login,
+                    "ktalk_mention_id": row.ktalk_mention_id,
+                    "ad_name": row.ad_name,
+                }
+                for row in db_found.values()
+            ],
+            "not_found": [],
         }
+        logger.info("Response success status=200 found=%s not_found=0", len(db_found))
+        return response
 
-    found_ad_logins = {row.ad_login for row in db_found_by_login.values()}
-    found_mention_ids = set(db_found_by_mention.keys())
-    missing_ad_logins = [item for item in normalized_logins if item not in found_ad_logins]
-    missing_mention_ids = [item for item in normalized_mention_ids if item not in found_mention_ids]
-    without_ktalk_mention_id: list[str] = []
-    records_to_upsert: list[dict] = []
-
-    logger.info(
-        "DB search complete found_by_login=%s found_by_mention=%s missing_logins=%s missing_mentions=%s",
-        len(db_found_by_login),
-        len(db_found_by_mention),
-        len(missing_ad_logins),
-        len(missing_mention_ids),
-    )
-
-    logger.info("Launching AD lookup for missing ad_login values count=%s", len(missing_ad_logins))
+    logger.info("Launching AD lookup for %s users", len(missing_after_db))
     try:
-        ad_users = fetch_ad_users_batch(missing_ad_logins)
+        ad_users = fetch_ad_users_batch(missing_after_db)
     except LDAPUnavailableError:
         return error_response(
             "ldap_unavailable",
             str(CONFIG.get("ldap_unavailable_message", "Active Directory connection failed")),
             503,
         )
+        return error_response("ldap_unavailable", "Active Directory connection failed", 503)
+
+    records_to_upsert: list[dict] = []
+    newly_found: dict[str, dict[str, str]] = {}
 
     logger.info("Launching KTalk lookup")
-    for login in missing_ad_logins:
+    for login in missing_after_db:
         ad_user = ad_users.get(login)
         if not ad_user:
             continue
+
+        record = {
+            "ad_login": ad_user.login,
+            "ad_first_name": ad_user.first_name,
+            "ad_last_name": ad_user.last_name,
+            "ad_display_name": ad_user.display_name,
+            "ad_title": ad_user.title,
+            "ad_active": ad_user.active,
+            "ktalk_mention_id": None,
+            "ktalk_display_name": "",
+            "ktalk_post": "",
+            "ktalk_matched": False,
+            "ktalk_deactivated": False,
+        }
 
         if ad_user.active:
             try:
@@ -195,67 +169,24 @@ def resolve_users(request: Request):
                     str(CONFIG.get("ktalk_unavailable_message", "Kontur Talk lookup failed")),
                     503,
                 )
+                return error_response("ktalk_unavailable", "Kontur Talk lookup failed", 503)
 
             if match and match.mention_id:
-                found_users[login] = {
+                record["ktalk_mention_id"] = match.mention_id
+                record["ktalk_display_name"] = match.display_name
+                record["ktalk_post"] = match.post
+                record["ktalk_matched"] = True
+                record["ktalk_deactivated"] = match.deactivated
+                newly_found[login] = {
                     "ad_login": login,
                     "ktalk_mention_id": match.mention_id,
                     "ad_name": make_ad_name(ad_user.first_name, ad_user.last_name, ad_user.display_name),
                 }
-                records_to_upsert.append(
-                    _upsert_record_from_resolved(login, ad_user, match.mention_id, match.display_name, match.post)
-                )
                 logger.info("Strict match success login=%s", login)
             else:
-                without_ktalk_mention_id.append(login)
                 logger.info("Strict match failed login=%s", login)
-        else:
-            without_ktalk_mention_id.append(login)
 
-    logger.info("Launching KTalk profile lookup for missing mention_id values count=%s", len(missing_mention_ids))
-    for mention_id in missing_mention_ids:
-        try:
-            profile = fetch_ktalk_profile_by_mention_id(mention_id)
-            resolved_login = resolve_ad_login_by_mention_id(mention_id, profile=profile)
-        except KTalkUnavailableError:
-            return error_response(
-                "ktalk_unavailable",
-                str(CONFIG.get("ktalk_unavailable_message", "Kontur Talk lookup failed")),
-                503,
-            )
-
-        if not resolved_login:
-            continue
-
-        ad_users_for_mention = {}
-        try:
-            ad_users_for_mention = fetch_ad_users_batch([resolved_login])
-        except LDAPUnavailableError:
-            return error_response(
-                "ldap_unavailable",
-                str(CONFIG.get("ldap_unavailable_message", "Active Directory connection failed")),
-                503,
-            )
-
-        ad_user = ad_users_for_mention.get(resolved_login)
-        if not ad_user:
-            continue
-
-        found_users[resolved_login] = {
-            "ad_login": resolved_login,
-            "ktalk_mention_id": mention_id,
-            "ad_name": make_ad_name(ad_user.first_name, ad_user.last_name, ad_user.display_name),
-        }
-        records_to_upsert.append(
-            _upsert_record_from_resolved(
-                resolved_login,
-                ad_user,
-                mention_id,
-                str(profile.get("displayname", "") or "").strip(),
-                str(profile.get("post", "") or "").strip(),
-            )
-        )
-        found_mention_ids.add(mention_id)
+        records_to_upsert.append(record)
 
     try:
         upsert_count = upsert_user_mappings(records_to_upsert)
@@ -266,24 +197,24 @@ def resolve_users(request: Request):
             str(CONFIG.get("database_unavailable_message", "Database connection failed")),
             503,
         )
+        return error_response("database_unavailable", "Database connection failed", 503)
 
-    not_found_ad_logins = [item for item in normalized_logins if item not in found_users and item not in without_ktalk_mention_id]
-    not_found_ktalk_mention_ids = [item for item in normalized_mention_ids if item not in found_mention_ids]
+    all_found = {
+        **{
+            k: {"ad_login": v.ad_login, "ktalk_mention_id": v.ktalk_mention_id, "ad_name": v.ad_name}
+            for k, v in db_found.items()
+        },
+        **newly_found,
+    }
+
+    not_found = _to_not_found(normalized, all_found)
 
     response = {
-        "count_requested_ad_logins": len(raw_logins),
-        "count_requested_ktalk_mention_ids": len(raw_mention_ids),
-        "count_found": len(found_users),
-        "users": list(found_users.values()),
-        "not_found_ad_logins": not_found_ad_logins,
-        "not_found_ktalk_mention_ids": not_found_ktalk_mention_ids,
-        "without_ktalk_mention_id": without_ktalk_mention_id,
+        "count_requested": len(raw_logins),
+        "count_normalized": len(normalized),
+        "count_found": len(all_found),
+        "users": list(all_found.values()),
+        "not_found": not_found,
     }
-    logger.info(
-        "Response success status=200 found=%s not_found_ad=%s not_found_mentions=%s without_mention=%s",
-        len(found_users),
-        len(not_found_ad_logins),
-        len(not_found_ktalk_mention_ids),
-        len(without_ktalk_mention_id),
-    )
+    logger.info("Response success status=200 found=%s not_found=%s", len(all_found), len(not_found))
     return response

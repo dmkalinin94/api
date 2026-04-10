@@ -19,7 +19,7 @@ pip install -r requirements.txt
 - Kontur Talk (`ktalk_base_url`, `ktalk_bearer_token`, `ktalk_host`, `ktalk_talk_host`)
 - Runtime (`verify_ssl`, `request_timeout`, `log_file`, `log_file_size`)
 
-> В проекте все рабочие переменные вынесены в `cnf.py` (в `CONFIG`), а модули читают значения только оттуда.
+Также поддерживаются env-переопределения (например, `KTOLKAPI_PG_DSN`, `KTOLKAPI_LOG_FILE`).
 
 ## Ручной запуск API
 
@@ -45,30 +45,16 @@ curl "http://127.0.0.1:8000/resolve?ad_login=ivanov"
 curl "http://127.0.0.1:8000/resolve?ad_login=ivanov&ad_login=petrov"
 ```
 
-Нужно передать хотя бы один параметр: `ad_login` или `ktalk_mention_id`. Каждый может передаваться несколько раз.
-
-### Один mention_id
-
-```bash
-curl "http://127.0.0.1:8000/resolve?ktalk_mention_id=@ivanov:matrix-9.ktalk.ru"
-```
-
-### Смешанный запрос
-
-```bash
-curl "http://127.0.0.1:8000/resolve?ktalk_mention_id=@ivanov:matrix-9.ktalk.ru&ad_login=petrov"
-```
-
-Поддерживаются оба query-параметра: `ad_login` и `ktalk_mention_id`.
+Параметр `ad_login` обязателен и может передаваться несколько раз.
 
 ## Логика обработки
 
-1. Нормализация списков `ad_login` и `ktalk_mention_id`.
-2. Поиск совпадений в PostgreSQL по обоим ключам.
-3. Для отсутствующих `ad_login` — запрос в AD и strict match в KTalk.
-4. Для отсутствующих `ktalk_mention_id` — получение KTalk-профиля и извлечение AD login.
-5. Upsert только положительных соответствий в PostgreSQL.
-6. Возврат итогового JSON c `users`, `not_found_ad_logins`, `not_found_ktalk_mention_ids`, `without_ktalk_mention_id`.
+1. Нормализация списка `ad_login`.
+2. Поиск совпадений в PostgreSQL.
+3. Для отсутствующих логинов — запрос в AD.
+4. Для активных AD-пользователей — запрос в KTalk и strict match.
+5. Upsert результатов в PostgreSQL.
+6. Возврат итогового JSON.
 
 Weak match не используется.
 

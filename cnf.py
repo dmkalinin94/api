@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 from logging.handlers import RotatingFileHandler
 from typing import Any
@@ -29,7 +30,6 @@ CONFIG: dict[str, Any] = {
     "ktalk_bearer_token": "change_me",
     "ktalk_host": "chat.ktalk.ru",
     "ktalk_talk_host": "https://samoletgroup.ktalk.ru",
-    "ktalk_homeserver": "https://matrix-9.ktalk.ru",
 
     # Runtime
     "verify_ssl": False,
@@ -45,8 +45,7 @@ CONFIG: dict[str, Any] = {
     "api_version": "1.0.0",
     "api_resolve_path": "/resolve",
     "api_query_param_login": "ad_login",
-    "api_query_param_mention_id": "ktalk_mention_id",
-    "api_bad_request_message": "at least one ad_login or ktalk_mention_id query parameter is required",
+    "api_bad_request_message": "at least one ad_login query parameter is required",
     "database_unavailable_message": "Database connection failed",
     "ldap_unavailable_message": "Active Directory connection failed",
     "ktalk_unavailable_message": "Kontur Talk lookup failed",
@@ -55,6 +54,27 @@ CONFIG: dict[str, Any] = {
     "ktalk_limit": 15,
     "ktalk_user_agent": "autoalerter/1.0",
 }
+
+def _cast_bool(value: str) -> bool:
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def apply_env_overrides() -> None:
+    for env_key, conf_key in ENV_TO_CONFIG.items():
+        if env_key not in os.environ:
+            continue
+        raw = os.environ.get(env_key)
+        if raw is None:
+            continue
+        if conf_key == "verify_ssl":
+            CONFIG[conf_key] = _cast_bool(raw)
+        elif conf_key == "request_timeout":
+            try:
+                CONFIG[conf_key] = int(raw)
+            except ValueError:
+                pass
+        else:
+            CONFIG[conf_key] = raw
 
 
 def parse_log_file_size(value: str) -> int:
@@ -99,6 +119,7 @@ def build_safe_pg_dsn_for_logs(dsn: str) -> str:
     return f"postgresql://{user_part}{host}:{port}/{dbname}"
 
 
+apply_env_overrides()
 PG_CONNECT_PARAMS = parse_pg_dsn(CONFIG["pg_dsn"])
 
 
@@ -122,6 +143,12 @@ def get_logger() -> logging.Logger:
     formatter = logging.Formatter(
         fmt=str(CONFIG.get("log_format", "%(asctime)s | %(levelname)s | %(name)s | %(message)s")),
         datefmt=str(CONFIG.get("log_datefmt", "%Y-%m-%d %H:%M:%S")),
+        backupCount=5,
+        encoding="utf-8",
+    )
+    formatter = logging.Formatter(
+        fmt="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
     )
     handler.setFormatter(formatter)
     logger.addHandler(handler)

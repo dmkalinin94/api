@@ -72,47 +72,6 @@ def fetch_mapped_users_by_logins(logins: list[str]) -> dict[str, DBMappedUser]:
     return result
 
 
-def fetch_mapped_users_by_mention_ids(mention_ids: list[str]) -> dict[str, DBMappedUser]:
-    if not mention_ids:
-        return {}
-
-    table_name = CONFIG["table_name"]
-    sql = f"""
-    SELECT
-        lower(ad_login) AS ad_login,
-        ktalk_mention_id,
-        COALESCE(
-            NULLIF(TRIM(ad_first_name || ' ' || ad_last_name), ''),
-            NULLIF(TRIM(ad_display_name), '')
-        ) AS ad_name
-    FROM {table_name}
-    WHERE ktalk_mention_id = ANY(%(mention_ids)s)
-      AND ad_active = TRUE
-      AND ktalk_matched = TRUE
-      AND COALESCE(ktalk_deactivated, FALSE) = FALSE
-      AND ktalk_mention_id IS NOT NULL;
-    """
-
-    try:
-        with get_db_connection() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(sql, {"mention_ids": mention_ids})
-            rows = cur.fetchall()
-    except DatabaseUnavailableError:
-        raise
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("Failed to read mapped users by mention_id")
-        raise DatabaseUnavailableError("Database query failed") from exc
-
-    result: dict[str, DBMappedUser] = {}
-    for row in rows:
-        login = str(row.get("ad_login") or "").strip().lower()
-        mention_id = str(row.get("ktalk_mention_id") or "").strip()
-        ad_name = str(row.get("ad_name") or "").strip()
-        if login and mention_id:
-            result[mention_id] = DBMappedUser(ad_login=login, ktalk_mention_id=mention_id, ad_name=ad_name)
-    return result
-
-
 def validate_record(record: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(record)
     normalized["ad_login"] = str(normalized.get("ad_login") or "").strip().lower()
