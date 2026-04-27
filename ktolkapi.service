@@ -1,0 +1,16 @@
+[Unit]
+Description=Ktolk API daemon
+After=network.target
+
+[Service]
+Type=simple
+User=ktolkapi
+Group=ktolkapi
+WorkingDirectory=/opt/ktolkapi
+ExecStart=/opt/ktolkapi/venv/bin/uvicorn api_daemon:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
