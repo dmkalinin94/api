@@ -106,13 +106,13 @@ def find_ad_user_by_ktalk_profile(display_name: str, post: str) -> UserMatchResu
     normalized_display_name = normalize_value(display_name)
     normalized_post = normalize_value(post)
 
-    if not normalized_display_name or not normalized_post:
+    if not normalized_display_name:
         logger.info(
-            "KTalk profile has no displayname/post displayname=%s post=%s",
+            "KTalk profile has no displayname displayname=%s post=%s",
             display_name,
             post,
         )
-        return UserMatchResult(status="not_found", reason="displayname_or_post_missing")
+        return UserMatchResult(status="not_found", reason="displayname_missing")
 
     parts = [item for item in normalized_display_name.split(" ") if item]
     if len(parts) < 2:

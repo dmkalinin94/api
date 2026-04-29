@@ -180,18 +180,18 @@ def find_ktalk_match_for_ad_user(ad_user: ADUser) -> UserMatchResult:
 
 def fetch_ktalk_profile_by_mention_id(mention_id: str) -> dict:
     bearer = build_ktalk_bearer(str(CONFIG.get("ktalk_bearer_token", "")))
-    homeserver = str(CONFIG.get("ktalk_homeserver", "")).rstrip("/")
+    profile_base_url = str(CONFIG.get("ktalk_profile_base_url", "")).rstrip("/")
     talk_host = str(CONFIG.get("ktalk_talk_host", ""))
     host = str(CONFIG.get("ktalk_host", ""))
-    if not bearer or not homeserver:
+    if not bearer or not profile_base_url:
         return {}
 
     encoded_mention_id = quote(str(mention_id or "").strip(), safe="")
-    url = f"{homeserver}/_matrix/client/r0/profile/{encoded_mention_id}"
+    url = f"{profile_base_url}/{encoded_mention_id}"
     headers = _build_ktalk_headers(talk_host=talk_host, host=host, bearer=bearer)
 
     try:
-        logger.debug("KTalk profile request started mention_id=%s homeserver=%s", mention_id, homeserver)
+        logger.debug("KTalk profile request started mention_id=%s profile_base_url=%s", mention_id, profile_base_url)
         response = requests.get(
             url,
             headers=headers,

@@ -30,6 +30,7 @@ CONFIG: dict[str, Any] = {
     "ktalk_host": "chat.ktalk.ru",
     "ktalk_talk_host": "https://samoletgroup.ktalk.ru",
     "ktalk_homeserver": "https://matrix-9.ktalk.ru",
+    "ktalk_profile_base_url": "https://chat.ktalk.ru/_matrix/client/r0/profile/",
 
     # Runtime
     "verify_ssl": False,

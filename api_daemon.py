@@ -247,7 +247,28 @@ def resolve_users(request: Request):
 
         profile_display_name = str(profile.get("displayname", "") or "").strip()
         profile_post = str(profile.get("post", "") or "").strip()
-        if not profile_display_name or not profile_post:
+        talk_user_key = str(profile.get("talk_user_key", "") or "").strip().lower()
+        ad_user = None
+
+        if talk_user_key and "@" in talk_user_key:
+            ad_login_from_talk_user_key = talk_user_key.split("@", 1)[0].strip().lower()
+            if ad_login_from_talk_user_key:
+                logger.debug(
+                    "Resolved ad_login from talk_user_key mention_id=%s ad_login=%s",
+                    mention_id,
+                    ad_login_from_talk_user_key,
+                )
+                try:
+                    ad_users_from_talk_key = fetch_ad_users_batch([ad_login_from_talk_user_key])
+                except LDAPUnavailableError:
+                    return error_response(
+                        "ldap_unavailable",
+                        str(CONFIG.get("ldap_unavailable_message", "Active Directory connection failed")),
+                        503,
+                    )
+                ad_user = ad_users_from_talk_key.get(ad_login_from_talk_user_key)
+
+        if not ad_user and not profile_display_name:
             logger.info(
                 "KTalk profile has no displayname/post mention_id=%s displayname=%s post=%s",
                 mention_id,
@@ -257,35 +278,37 @@ def resolve_users(request: Request):
             logger.info("User not found by ktalk_mention_id=%s", mention_id)
             continue
 
-        try:
-            ad_match_result = find_ad_user_by_ktalk_profile(display_name=profile_display_name, post=profile_post)
-        except LDAPUnavailableError:
-            return error_response(
-                "ldap_unavailable",
-                str(CONFIG.get("ldap_unavailable_message", "Active Directory connection failed")),
-                503,
-            )
+        ad_match_result = None
+        if not ad_user:
+            try:
+                ad_match_result = find_ad_user_by_ktalk_profile(display_name=profile_display_name, post=profile_post)
+            except LDAPUnavailableError:
+                return error_response(
+                    "ldap_unavailable",
+                    str(CONFIG.get("ldap_unavailable_message", "Active Directory connection failed")),
+                    503,
+                )
 
-        if ad_match_result.status == "ambiguous":
-            ambiguous_matches.append(
-                {
-                    "source": "ktalk_mention_id",
-                    "requested": mention_id,
-                    "reason": ad_match_result.reason,
-                    "candidates": ad_match_result.candidates,
-                }
-            )
-            logger.warning("User match ambiguous source=ktalk_mention_id requested=%s candidates=%s reason=%s", mention_id, len(ad_match_result.candidates), ad_match_result.reason)
-            logger.info("User not found by ktalk_mention_id=%s", mention_id)
-            continue
-        if ad_match_result.status != "found" or not ad_match_result.ad_user:
-            logger.info(
-                "User not found source=ktalk_mention_id requested=%s reason=%s",
-                mention_id,
-                ad_match_result.reason,
-            )
-            continue
-        ad_user = ad_match_result.ad_user
+            if ad_match_result.status == "ambiguous":
+                ambiguous_matches.append(
+                    {
+                        "source": "ktalk_mention_id",
+                        "requested": mention_id,
+                        "reason": ad_match_result.reason,
+                        "candidates": ad_match_result.candidates,
+                    }
+                )
+                logger.warning("User match ambiguous source=ktalk_mention_id requested=%s candidates=%s reason=%s", mention_id, len(ad_match_result.candidates), ad_match_result.reason)
+                logger.info("User not found by ktalk_mention_id=%s", mention_id)
+                continue
+            if ad_match_result.status != "found" or not ad_match_result.ad_user:
+                logger.info(
+                    "User not found source=ktalk_mention_id requested=%s reason=%s",
+                    mention_id,
+                    ad_match_result.reason,
+                )
+                continue
+            ad_user = ad_match_result.ad_user
 
         found_users[ad_user.login] = {
             "ad_login": ad_user.login,
@@ -302,7 +325,7 @@ def resolve_users(request: Request):
             )
         )
         found_mention_ids.add(mention_id)
-        if ad_match_result.reason == "name_and_title":
+        if ad_match_result and ad_match_result.reason == "name_and_title":
             logger.info("User matched by name and title source=ktalk_mention_id requested=%s ad_login=%s ktalk_mention_id=%s", mention_id, ad_user.login, mention_id)
         else:
             logger.info("User matched by name only source=ktalk_mention_id requested=%s ad_login=%s ktalk_mention_id=%s reason=title_missing", mention_id, ad_user.login, mention_id)
