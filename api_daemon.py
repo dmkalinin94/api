@@ -157,6 +157,7 @@ def resolve_users(request: Request):
     missing_mention_ids = [item for item in normalized_mention_ids if item not in found_mention_ids]
     without_ktalk_mention_id: list[str] = []
     records_to_upsert: list[dict] = []
+    ambiguous_matches: list[dict] = []
 
     logger.info(
         "DB search complete found_by_login=%s found_by_mention=%s missing_logins=%s missing_mentions=%s",
@@ -186,7 +187,7 @@ def resolve_users(request: Request):
 
         if ad_user.active:
             try:
-                match = find_ktalk_match_for_ad_user(ad_user)
+                match_result = find_ktalk_match_for_ad_user(ad_user)
             except KTalkUnavailableError:
                 return error_response(
                     "ktalk_unavailable",
@@ -194,7 +195,8 @@ def resolve_users(request: Request):
                     503,
                 )
 
-            if match and match.mention_id:
+            if match_result.status == "found" and match_result.ktalk_user and match_result.ktalk_user.mention_id:
+                match = match_result.ktalk_user
                 found_users[login] = {
                     "ad_login": login,
                     "ktalk_mention_id": match.mention_id,
@@ -203,11 +205,24 @@ def resolve_users(request: Request):
                 records_to_upsert.append(
                     _upsert_record_from_resolved(login, ad_user, match.mention_id, match.display_name, match.post)
                 )
-                logger.info("Strict match success login=%s", login)
+                if match_result.reason == "name_and_title":
+                    logger.info("User matched by name and title source=ad_login requested=%s ad_login=%s ktalk_mention_id=%s", login, login, match.mention_id)
+                else:
+                    logger.info("User matched by name only source=ad_login requested=%s ad_login=%s ktalk_mention_id=%s reason=title_missing", login, login, match.mention_id)
+            elif match_result.status == "ambiguous":
+                without_ktalk_mention_id.append(login)
+                ambiguous_matches.append(
+                    {
+                        "source": "ad_login",
+                        "requested": login,
+                        "reason": match_result.reason,
+                        "candidates": match_result.candidates,
+                    }
+                )
+                logger.warning("User match ambiguous source=ad_login requested=%s candidates=%s reason=%s", login, len(match_result.candidates), match_result.reason)
             else:
                 without_ktalk_mention_id.append(login)
-                logger.info("Strict match failed login=%s", login)
-                logger.info("User not found by ad_login=%s", login)
+                logger.info("User not found source=ad_login requested=%s reason=%s", login, match_result.reason)
         else:
             without_ktalk_mention_id.append(login)
             logger.info("AD user found but inactive ad_login=%s", login)
@@ -243,7 +258,7 @@ def resolve_users(request: Request):
             continue
 
         try:
-            ad_user = find_ad_user_by_ktalk_profile(display_name=profile_display_name, post=profile_post)
+            ad_match_result = find_ad_user_by_ktalk_profile(display_name=profile_display_name, post=profile_post)
         except LDAPUnavailableError:
             return error_response(
                 "ldap_unavailable",
@@ -251,15 +266,26 @@ def resolve_users(request: Request):
                 503,
             )
 
-        if not ad_user:
-            logger.info(
-                "AD user not found by KTalk identity mention_id=%s displayname=%s post=%s",
-                mention_id,
-                profile_display_name,
-                profile_post,
+        if ad_match_result.status == "ambiguous":
+            ambiguous_matches.append(
+                {
+                    "source": "ktalk_mention_id",
+                    "requested": mention_id,
+                    "reason": ad_match_result.reason,
+                    "candidates": ad_match_result.candidates,
+                }
             )
+            logger.warning("User match ambiguous source=ktalk_mention_id requested=%s candidates=%s reason=%s", mention_id, len(ad_match_result.candidates), ad_match_result.reason)
             logger.info("User not found by ktalk_mention_id=%s", mention_id)
             continue
+        if ad_match_result.status != "found" or not ad_match_result.ad_user:
+            logger.info(
+                "User not found source=ktalk_mention_id requested=%s reason=%s",
+                mention_id,
+                ad_match_result.reason,
+            )
+            continue
+        ad_user = ad_match_result.ad_user
 
         found_users[ad_user.login] = {
             "ad_login": ad_user.login,
@@ -276,6 +302,10 @@ def resolve_users(request: Request):
             )
         )
         found_mention_ids.add(mention_id)
+        if ad_match_result.reason == "name_and_title":
+            logger.info("User matched by name and title source=ktalk_mention_id requested=%s ad_login=%s ktalk_mention_id=%s", mention_id, ad_user.login, mention_id)
+        else:
+            logger.info("User matched by name only source=ktalk_mention_id requested=%s ad_login=%s ktalk_mention_id=%s reason=title_missing", mention_id, ad_user.login, mention_id)
 
     try:
         upsert_count = upsert_user_mappings(records_to_upsert)
@@ -298,6 +328,8 @@ def resolve_users(request: Request):
         "not_found_ad_logins": not_found_ad_logins,
         "not_found_ktalk_mention_ids": not_found_ktalk_mention_ids,
         "without_ktalk_mention_id": without_ktalk_mention_id,
+        "ambiguous_matches": ambiguous_matches,
+        "count_ambiguous_matches": len(ambiguous_matches),
     }
     logger.info(
         "Response success status=200 found=%s not_found_ad=%s not_found_mentions=%s without_mention=%s",

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import re
 
 from ldap3 import ALL, Connection, Server
@@ -24,6 +24,14 @@ class ADUser:
     display_name: str
     title: str
     active: bool
+
+
+@dataclass(slots=True)
+class UserMatchResult:
+    status: str  # found, not_found, ambiguous
+    ad_user: ADUser | None = None
+    candidates: list[dict] = field(default_factory=list)
+    reason: str = ""
 
 
 def normalize_value(value: str) -> str:
@@ -94,7 +102,7 @@ def fetch_ad_users_batch(logins: list[str]) -> dict[str, ADUser]:
     return found
 
 
-def find_ad_user_by_ktalk_profile(display_name: str, post: str) -> ADUser | None:
+def find_ad_user_by_ktalk_profile(display_name: str, post: str) -> UserMatchResult:
     normalized_display_name = normalize_value(display_name)
     normalized_post = normalize_value(post)
 
@@ -104,12 +112,12 @@ def find_ad_user_by_ktalk_profile(display_name: str, post: str) -> ADUser | None
             display_name,
             post,
         )
-        return None
+        return UserMatchResult(status="not_found", reason="displayname_or_post_missing")
 
     parts = [item for item in normalized_display_name.split(" ") if item]
     if len(parts) < 2:
         logger.info("KTalk displayname has insufficient parts for AD lookup displayname=%s", display_name)
-        return None
+        return UserMatchResult(status="not_found", reason="displayname_has_single_part")
 
     first_part = parts[0]
     last_part = parts[-1]
@@ -122,10 +130,13 @@ def find_ad_user_by_ktalk_profile(display_name: str, post: str) -> ADUser | None
 
     safe_title = escape_filter_chars(normalized_post)
     combined_name_filter = "".join(name_filters)
-    search_filter = f"(&(objectClass=user)(title={safe_title})(|{combined_name_filter}))"
+    name_filter = f"(&(objectClass=user)(|{combined_name_filter}))"
+    title_filter = f"(&(objectClass=user)(title={safe_title})(|{combined_name_filter}))" if normalized_post else name_filter
+    search_filter = title_filter
     logger.debug("AD lookup by KTalk identity search prepared displayname=%s post=%s", display_name, post)
 
-    candidates: list[ADUser] = []
+    strict_candidates: list[ADUser] = []
+    name_only_candidates: list[ADUser] = []
     try:
         with _open_connection() as conn:
             conn.search(
@@ -149,50 +160,65 @@ def find_ad_user_by_ktalk_profile(display_name: str, post: str) -> ADUser | None
                     continue
 
                 ad_title_normalized = normalize_value(title)
-                if ad_title_normalized != normalized_post:
-                    continue
-
                 variant_1 = normalize_value(f"{first_name} {last_name}")
                 variant_2 = normalize_value(f"{last_name} {first_name}")
                 variant_display = normalize_value(ad_display_name)
                 if normalized_display_name not in {variant_1, variant_2, variant_display}:
                     continue
 
-                matched_by = "displayName" if normalized_display_name == variant_display else "givenName/sn"
-                logger.debug(
-                    "AD candidate matched displayname=%s post=%s matched_by=%s ad_login=%s",
-                    display_name,
-                    post,
-                    matched_by,
-                    login,
+                ad_user = ADUser(
+                    login=login,
+                    first_name=first_name,
+                    last_name=last_name,
+                    display_name=ad_display_name,
+                    title=title,
+                    active=True,
                 )
-
-                candidates.append(
-                    ADUser(
-                        login=login,
-                        first_name=first_name,
-                        last_name=last_name,
-                        display_name=ad_display_name,
-                        title=title,
-                        active=True,
-                    )
-                )
+                if normalized_post and ad_title_normalized:
+                    if ad_title_normalized == normalized_post:
+                        strict_candidates.append(ad_user)
+                else:
+                    name_only_candidates.append(ad_user)
     except LDAPUnavailableError:
         raise
     except LDAPException as exc:
         logger.exception("Active Directory lookup by KTalk profile failed")
         raise LDAPUnavailableError("Active Directory lookup failed") from exc
 
-    if len(candidates) == 1:
-        return candidates[0]
-    if len(candidates) > 1:
+    if len(strict_candidates) == 1:
+        return UserMatchResult(status="found", ad_user=strict_candidates[0], reason="name_and_title")
+    if len(strict_candidates) > 1:
         logger.warning(
             "AD lookup by KTalk identity is ambiguous displayname=%s post=%s candidates=%s",
             display_name,
             post,
-            len(candidates),
+            len(strict_candidates),
         )
-        return None
+        return UserMatchResult(
+            status="ambiguous",
+            reason="multiple_strict_candidates",
+            candidates=[
+                {"ad_login": c.login, "ad_name": f"{c.first_name} {c.last_name}".strip() or c.display_name, "ad_title": c.title}
+                for c in strict_candidates
+            ],
+        )
+    if len(name_only_candidates) == 1:
+        return UserMatchResult(status="found", ad_user=name_only_candidates[0], reason="name_only_title_missing")
+    if len(name_only_candidates) > 1:
+        logger.warning(
+            "AD lookup by KTalk identity is ambiguous displayname=%s post=%s candidates=%s",
+            display_name,
+            post,
+            len(name_only_candidates),
+        )
+        return UserMatchResult(
+            status="ambiguous",
+            reason="matched by name only, multiple AD candidates, title missing in AD or KTalk",
+            candidates=[
+                {"ad_login": c.login, "ad_name": f"{c.first_name} {c.last_name}".strip() or c.display_name, "ad_title": c.title}
+                for c in name_only_candidates
+            ],
+        )
 
     logger.info("AD user not found by KTalk identity displayname=%s post=%s", display_name, post)
-    return None
+    return UserMatchResult(status="not_found", reason="no_candidates")

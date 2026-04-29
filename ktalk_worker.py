@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from urllib.parse import quote
 
 import requests
@@ -23,6 +23,15 @@ class KTalkUser:
     display_name: str
     post: str
     deactivated: bool
+
+
+@dataclass(slots=True)
+class UserMatchResult:
+    status: str  # found, not_found, ambiguous
+    ad_user: ADUser | None = None
+    ktalk_user: KTalkUser | None = None
+    candidates: list[dict] = field(default_factory=list)
+    reason: str = ""
 
 
 def normalize_value(value: str) -> str:
@@ -106,11 +115,13 @@ def search_ktalk_users(
     ]
 
 
-def match_ktalk_user_strict(ad_user: ADUser, candidates: list[KTalkUser]) -> KTalkUser | None:
+def match_ktalk_user(ad_user: ADUser, candidates: list[KTalkUser]) -> UserMatchResult:
     ad_name = normalize_value(f"{ad_user.first_name} {ad_user.last_name}")
     ad_name_rev = normalize_value(f"{ad_user.last_name} {ad_user.first_name}")
     ad_title = normalize_value(ad_user.title)
 
+    strict_candidates: list[KTalkUser] = []
+    name_only_candidates: list[KTalkUser] = []
     for candidate in candidates:
         if candidate.deactivated:
             continue
@@ -118,20 +129,42 @@ def match_ktalk_user_strict(ad_user: ADUser, candidates: list[KTalkUser]) -> KTa
         name = normalize_value(candidate.display_name)
         post = normalize_value(candidate.post)
 
-        if name in {ad_name, ad_name_rev} and ad_title and post == ad_title:
-            matched_by = "first_last" if name == ad_name else "last_first"
-            logger.debug(
-                "Strict KTalk match success ad_login=%s matched_by=%s candidate_mention_id=%s",
-                ad_user.login,
-                matched_by,
-                candidate.mention_id,
-            )
-            return candidate
+        if name not in {ad_name, ad_name_rev, normalize_value(ad_user.display_name)}:
+            continue
+        if ad_title and post:
+            if post == ad_title:
+                strict_candidates.append(candidate)
+        else:
+            name_only_candidates.append(candidate)
 
-    return None
+    if len(strict_candidates) == 1:
+        return UserMatchResult(status="found", ad_user=ad_user, ktalk_user=strict_candidates[0], reason="name_and_title")
+    if len(strict_candidates) > 1:
+        return UserMatchResult(
+            status="ambiguous",
+            ad_user=ad_user,
+            reason="multiple_strict_candidates",
+            candidates=[
+                {"ktalk_mention_id": c.mention_id, "ktalk_display_name": c.display_name, "ktalk_post": c.post}
+                for c in strict_candidates
+            ],
+        )
+    if len(name_only_candidates) == 1:
+        return UserMatchResult(status="found", ad_user=ad_user, ktalk_user=name_only_candidates[0], reason="name_only_title_missing")
+    if len(name_only_candidates) > 1:
+        return UserMatchResult(
+            status="ambiguous",
+            ad_user=ad_user,
+            reason="matched by name only, multiple KTalk candidates, title missing in AD or KTalk",
+            candidates=[
+                {"ktalk_mention_id": c.mention_id, "ktalk_display_name": c.display_name, "ktalk_post": c.post}
+                for c in name_only_candidates
+            ],
+        )
+    return UserMatchResult(status="not_found", ad_user=ad_user, reason="no_candidates")
 
 
-def find_ktalk_match_for_ad_user(ad_user: ADUser) -> KTalkUser | None:
+def find_ktalk_match_for_ad_user(ad_user: ADUser) -> UserMatchResult:
     candidates = search_ktalk_users(
         query=ad_user.login,
         base_url=CONFIG["ktalk_base_url"],
@@ -142,7 +175,7 @@ def find_ktalk_match_for_ad_user(ad_user: ADUser) -> KTalkUser | None:
         request_timeout=int(CONFIG.get("request_timeout", 15)),
         limit=int(CONFIG.get("ktalk_limit", 15)),
     )
-    return match_ktalk_user_strict(ad_user, candidates)
+    return match_ktalk_user(ad_user, candidates)
 
 
 def fetch_ktalk_profile_by_mention_id(mention_id: str) -> dict:
