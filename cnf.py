@@ -37,6 +37,7 @@ CONFIG: dict[str, Any] = {
     "log_file": "/tmp/ktolkapi.log",
     "log_file_size": "10Mb",
     "log_backup_count": 5,
+    "log_level": "DEBUG",
     "log_format": "%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     "log_datefmt": "%Y-%m-%d %H:%M:%S",
 
@@ -110,7 +111,9 @@ def get_logger() -> logging.Logger:
     if logger.handlers:
         return logger
 
-    logger.setLevel(logging.INFO)
+    configured_level = str(CONFIG.get("log_level", "DEBUG")).strip().upper()
+    logger_level = getattr(logging, configured_level, logging.DEBUG)
+    logger.setLevel(logger_level)
     max_bytes = parse_log_file_size(str(CONFIG.get("log_file_size", "10Mb")))
 
     handler = RotatingFileHandler(

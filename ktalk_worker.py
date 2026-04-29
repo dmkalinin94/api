@@ -68,6 +68,7 @@ def search_ktalk_users(
     headers = _build_ktalk_headers(talk_host=talk_host, host=host, bearer=bearer)
 
     try:
+        logger.debug("KTalk search request started query=%s base_url=%s", query, base_url)
         response = requests.get(
             base_url,
             headers=headers,
@@ -85,6 +86,7 @@ def search_ktalk_users(
 
     try:
         payload = response.json()
+        logger.debug("KTalk search response payload query=%s payload=%s", query, payload)
     except ValueError as exc:
         logger.exception("Kontur Talk response is not valid JSON")
         raise KTalkUnavailableError("Kontur Talk lookup failed") from exc
@@ -117,6 +119,13 @@ def match_ktalk_user_strict(ad_user: ADUser, candidates: list[KTalkUser]) -> KTa
         post = normalize_value(candidate.post)
 
         if name in {ad_name, ad_name_rev} and ad_title and post == ad_title:
+            matched_by = "first_last" if name == ad_name else "last_first"
+            logger.debug(
+                "Strict KTalk match success ad_login=%s matched_by=%s candidate_mention_id=%s",
+                ad_user.login,
+                matched_by,
+                candidate.mention_id,
+            )
             return candidate
 
     return None
@@ -149,6 +158,7 @@ def fetch_ktalk_profile_by_mention_id(mention_id: str) -> dict:
     headers = _build_ktalk_headers(talk_host=talk_host, host=host, bearer=bearer)
 
     try:
+        logger.debug("KTalk profile request started mention_id=%s homeserver=%s", mention_id, homeserver)
         response = requests.get(
             url,
             headers=headers,
@@ -165,6 +175,7 @@ def fetch_ktalk_profile_by_mention_id(mention_id: str) -> dict:
 
     try:
         payload = response.json()
+        logger.debug("KTalk profile response mention_id=%s payload=%s", mention_id, payload)
     except ValueError as exc:
         logger.exception("Kontur Talk profile invalid JSON mention_id=%s", mention_id)
         raise KTalkUnavailableError("Kontur Talk lookup failed") from exc

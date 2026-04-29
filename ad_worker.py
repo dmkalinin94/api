@@ -62,8 +62,10 @@ def fetch_ad_user_with_connection(conn: Connection, ad_base_dn: str, login: str)
 
 def _open_connection() -> Connection:
     try:
+        logger.debug("Connecting to AD host=%s user=%s", CONFIG["ad_host"], CONFIG["ad_user"])
         server = Server(CONFIG["ad_host"], get_info=ALL)
         conn = Connection(server, user=CONFIG["ad_user"], password=CONFIG["ad_password"], auto_bind=True)
+        logger.debug("AD connection established")
         return conn
     except LDAPException as exc:
         logger.exception("Active Directory connection failed")
@@ -76,11 +78,13 @@ def fetch_ad_users_batch(logins: list[str]) -> dict[str, ADUser]:
 
     found: dict[str, ADUser] = {}
     try:
+        logger.debug("AD batch lookup started count=%s", len(logins))
         with _open_connection() as conn:
             for login in logins:
                 user = fetch_ad_user_with_connection(conn, CONFIG["ad_base_dn"], login)
                 if user is not None:
                     found[login] = user
+        logger.debug("AD batch lookup completed found=%s", len(found))
     except LDAPUnavailableError:
         raise
     except LDAPException as exc:
@@ -119,6 +123,7 @@ def find_ad_user_by_ktalk_profile(display_name: str, post: str) -> ADUser | None
     safe_title = escape_filter_chars(normalized_post)
     combined_name_filter = "".join(name_filters)
     search_filter = f"(&(objectClass=user)(title={safe_title})(|{combined_name_filter}))"
+    logger.debug("AD lookup by KTalk identity search prepared displayname=%s post=%s", display_name, post)
 
     candidates: list[ADUser] = []
     try:
@@ -152,6 +157,15 @@ def find_ad_user_by_ktalk_profile(display_name: str, post: str) -> ADUser | None
                 variant_display = normalize_value(ad_display_name)
                 if normalized_display_name not in {variant_1, variant_2, variant_display}:
                     continue
+
+                matched_by = "displayName" if normalized_display_name == variant_display else "givenName/sn"
+                logger.debug(
+                    "AD candidate matched displayname=%s post=%s matched_by=%s ad_login=%s",
+                    display_name,
+                    post,
+                    matched_by,
+                    login,
+                )
 
                 candidates.append(
                     ADUser(

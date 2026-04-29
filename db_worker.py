@@ -25,7 +25,10 @@ class DBMappedUser:
 
 def get_db_connection():
     try:
-        return psycopg2.connect(**PG_CONNECT_PARAMS)
+        logger.debug("Connecting to PostgreSQL host=%s port=%s dbname=%s", PG_CONNECT_PARAMS.get("host"), PG_CONNECT_PARAMS.get("port"), PG_CONNECT_PARAMS.get("dbname"))
+        conn = psycopg2.connect(**PG_CONNECT_PARAMS)
+        logger.debug("PostgreSQL connection established")
+        return conn
     except Exception as exc:  # noqa: BLE001
         logger.exception("Database connection failed")
         raise DatabaseUnavailableError("Database connection failed") from exc
@@ -53,9 +56,11 @@ def fetch_mapped_users_by_logins(logins: list[str]) -> dict[str, DBMappedUser]:
     """
 
     try:
+        logger.debug("DB lookup by ad_login started count=%s", len(logins))
         with get_db_connection() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(sql, {"logins": logins})
             rows = cur.fetchall()
+        logger.debug("DB lookup by ad_login done rows=%s", len(rows))
     except DatabaseUnavailableError:
         raise
     except Exception as exc:  # noqa: BLE001
@@ -94,9 +99,11 @@ def fetch_mapped_users_by_mention_ids(mention_ids: list[str]) -> dict[str, DBMap
     """
 
     try:
+        logger.debug("DB lookup by ktalk_mention_id started count=%s", len(mention_ids))
         with get_db_connection() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(sql, {"mention_ids": mention_ids})
             rows = cur.fetchall()
+        logger.debug("DB lookup by ktalk_mention_id done rows=%s", len(rows))
     except DatabaseUnavailableError:
         raise
     except Exception as exc:  # noqa: BLE001
@@ -196,8 +203,10 @@ def upsert_user_mappings(records: list[dict[str, Any]]) -> int:
     prepared = [validate_record(item) for item in records]
 
     try:
+        logger.debug("DB upsert started records=%s", len(prepared))
         with get_db_connection() as conn, conn.cursor() as cur:
             psycopg2.extras.execute_batch(cur, sql, prepared, page_size=100)
+        logger.debug("DB upsert completed records=%s", len(prepared))
         return len(prepared)
     except DatabaseUnavailableError:
         raise
