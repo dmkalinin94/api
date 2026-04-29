@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from ad_worker import LDAPUnavailableError, fetch_ad_users_batch
+from ad_worker import LDAPUnavailableError, fetch_ad_users_batch, find_ad_user_by_ktalk_profile
 from cnf import CONFIG, build_safe_pg_dsn_for_logs, get_logger
 from db_worker import (
     DatabaseUnavailableError,
@@ -11,12 +11,7 @@ from db_worker import (
     fetch_mapped_users_by_mention_ids,
     upsert_user_mappings,
 )
-from ktalk_worker import (
-    KTalkUnavailableError,
-    fetch_ktalk_profile_by_mention_id,
-    find_ktalk_match_for_ad_user,
-    resolve_ad_login_by_mention_id,
-)
+from ktalk_worker import KTalkUnavailableError, fetch_ktalk_profile_by_mention_id, find_ktalk_match_for_ad_user
 
 app = FastAPI(
     title=str(CONFIG.get("api_title", "AD -> KTalk mention resolver")),
@@ -131,10 +126,11 @@ def resolve_users(request: Request):
 
     client_ip = _extract_client_ip(request)
     logger.info(
-        "Incoming request ip=%s endpoint=%s normalized_logins=%s",
+        "Incoming request ip=%s endpoint=%s normalized_logins=%s normalized_mention_ids=%s",
         client_ip,
         request.url.path,
         normalized_logins,
+        normalized_mention_ids,
     )
 
     try:
@@ -182,8 +178,10 @@ def resolve_users(request: Request):
 
     logger.info("Launching KTalk lookup")
     for login in missing_ad_logins:
+        logger.info("User not found in DB by ad_login=%s", login)
         ad_user = ad_users.get(login)
         if not ad_user:
+            logger.info("AD user not found by ad_login=%s", login)
             continue
 
         if ad_user.active:
@@ -209,14 +207,17 @@ def resolve_users(request: Request):
             else:
                 without_ktalk_mention_id.append(login)
                 logger.info("Strict match failed login=%s", login)
+                logger.info("User not found by ad_login=%s", login)
         else:
             without_ktalk_mention_id.append(login)
+            logger.info("AD user found but inactive ad_login=%s", login)
+            logger.info("User without KTalk mention_id ad_login=%s", login)
 
     logger.info("Launching KTalk profile lookup for missing mention_id values count=%s", len(missing_mention_ids))
     for mention_id in missing_mention_ids:
+        logger.info("User not found in DB by ktalk_mention_id=%s", mention_id)
         try:
             profile = fetch_ktalk_profile_by_mention_id(mention_id)
-            resolved_login = resolve_ad_login_by_mention_id(mention_id, profile=profile)
         except KTalkUnavailableError:
             return error_response(
                 "ktalk_unavailable",
@@ -224,12 +225,25 @@ def resolve_users(request: Request):
                 503,
             )
 
-        if not resolved_login:
+        if not profile:
+            logger.info("KTalk profile is empty for ktalk_mention_id=%s", mention_id)
+            logger.info("User not found by ktalk_mention_id=%s", mention_id)
             continue
 
-        ad_users_for_mention = {}
+        profile_display_name = str(profile.get("displayname", "") or "").strip()
+        profile_post = str(profile.get("post", "") or "").strip()
+        if not profile_display_name or not profile_post:
+            logger.info(
+                "KTalk profile has no displayname/post mention_id=%s displayname=%s post=%s",
+                mention_id,
+                profile_display_name,
+                profile_post,
+            )
+            logger.info("User not found by ktalk_mention_id=%s", mention_id)
+            continue
+
         try:
-            ad_users_for_mention = fetch_ad_users_batch([resolved_login])
+            ad_user = find_ad_user_by_ktalk_profile(display_name=profile_display_name, post=profile_post)
         except LDAPUnavailableError:
             return error_response(
                 "ldap_unavailable",
@@ -237,22 +251,28 @@ def resolve_users(request: Request):
                 503,
             )
 
-        ad_user = ad_users_for_mention.get(resolved_login)
         if not ad_user:
+            logger.info(
+                "AD user not found by KTalk identity mention_id=%s displayname=%s post=%s",
+                mention_id,
+                profile_display_name,
+                profile_post,
+            )
+            logger.info("User not found by ktalk_mention_id=%s", mention_id)
             continue
 
-        found_users[resolved_login] = {
-            "ad_login": resolved_login,
+        found_users[ad_user.login] = {
+            "ad_login": ad_user.login,
             "ktalk_mention_id": mention_id,
             "ad_name": make_ad_name(ad_user.first_name, ad_user.last_name, ad_user.display_name),
         }
         records_to_upsert.append(
             _upsert_record_from_resolved(
-                resolved_login,
+                ad_user.login,
                 ad_user,
                 mention_id,
-                str(profile.get("displayname", "") or "").strip(),
-                str(profile.get("post", "") or "").strip(),
+                profile_display_name,
+                profile_post,
             )
         )
         found_mention_ids.add(mention_id)
