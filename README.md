@@ -114,3 +114,37 @@ sudo systemctl enable --now ktolkapi.service
 sudo systemctl status ktolkapi.service
 journalctl -u ktolkapi.service -f
 ```
+
+## Вызов `POST /push`
+
+Требуется заголовок `X-Push-Token` со значением `CONFIG["api_push_secret_token"]`.
+
+```bash
+curl -X POST "http://127.0.0.1:8000/push" \
+  -H "Content-Type: application/json" \
+  -H "X-Push-Token: change_me" \
+  -d '{
+    "event_id": "123456789",
+    "event_value": "1",
+    "event_time": "2026.01.22 07:49:32",
+    "trigger_name": "High CPU usage on host",
+    "host_groups": ["Linux servers", "Production"],
+    "host_name": "srv-app-01",
+    "operation_data": "CPU load is 95%",
+    "severity": "Disaster",
+    "trigger_url": "https://zabbix.example.local/tr_events.php?triggerid=12345",
+    "users": ["ivanov", "@651ff94812fgja993c:matrix-9.ktalk.ru"]
+  }'
+```
+
+- `event_value = "1"` — отправка start-сообщения в личный room.
+- `event_value = "0"` — отправка resolve-сообщения (reply на start, если есть `ktalk_start_event_id`).
+
+Отправка в KTalk выполняется через Matrix API методом `PUT`:
+
+```bash
+curl -X PUT "https://chat.ktalk.ru/_matrix/client/r0/rooms/!roomid:matrix-9.ktalk.ru/send/m.room.message/m1777537548708.1" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <KTALK_BEARER_TOKEN>" \
+  -d '{"msgtype":"m.text","body":"🔴 Disaster","m.mentions":{}}'
+```
