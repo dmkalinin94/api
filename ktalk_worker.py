@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import re
+import time
+import uuid
 from dataclasses import dataclass, field
 from urllib.parse import quote
 
@@ -228,3 +230,58 @@ def resolve_ad_login_by_mention_id(mention_id: str, profile: dict | None = None)
         if candidate:
             return candidate
     return None
+
+
+def ensure_direct_room(ktalk_mention_id: str) -> str:
+    base_url = str(CONFIG.get("ktalk_matrix_base_url", "")).rstrip("/")
+    path = str(CONFIG.get("ktalk_create_room_path", "/createRoom"))
+    bearer = build_ktalk_bearer(str(CONFIG.get("ktalk_bearer_token", "")))
+    if not base_url or not bearer:
+        raise KTalkUnavailableError("Kontur Talk create room failed")
+    headers = _build_ktalk_headers(CONFIG.get("ktalk_talk_host", ""), CONFIG.get("ktalk_host", ""), bearer)
+    headers["content-type"] = "application/json"
+    payload = {"is_direct": True, "invite": [ktalk_mention_id]}
+    try:
+        response = requests.post(f"{base_url}{path}", headers=headers, json=payload, verify=bool(CONFIG.get("verify_ssl", True)), timeout=int(CONFIG.get("request_timeout", 15)))
+    except RequestException as exc:
+        raise KTalkUnavailableError("Kontur Talk create room failed") from exc
+    if response.status_code != 200:
+        logger.error("KTalk create room failed status=%s mention_id=%s", response.status_code, ktalk_mention_id)
+        raise KTalkUnavailableError(f"KTalk API returned {response.status_code}")
+    payload = response.json()
+    room_id = str(payload.get("room_id") or "").strip()
+    if not room_id:
+        raise KTalkUnavailableError("KTalk create room failed")
+    return room_id
+
+
+def build_ktalk_message_payload(body: str, reply_to_event_id: str | None = None) -> dict:
+    payload: dict = {"msgtype": "m.text", "body": body, "m.mentions": {}}
+    if reply_to_event_id:
+        payload["m.relates_to"] = {"m.in_reply_to": {"event_id": reply_to_event_id}}
+    return payload
+
+
+def send_ktalk_message(room_id: str, body: str, reply_to_event_id: str | None = None) -> str:
+    base_url = str(CONFIG.get("ktalk_matrix_base_url", "")).rstrip("/")
+    path_template = str(CONFIG.get("ktalk_send_message_path", "/rooms/{room_id}/send/m.room.message/{txn_id}"))
+    bearer = build_ktalk_bearer(str(CONFIG.get("ktalk_bearer_token", "")))
+    txn_id = f"m{int(time.time()*1000)}.{uuid.uuid4().hex[:8]}"
+    encoded_room = quote(room_id, safe="")
+    path = path_template.format(room_id=encoded_room, txn_id=txn_id)
+    url = f"{base_url}{path}"
+    headers = _build_ktalk_headers(CONFIG.get("ktalk_talk_host", ""), CONFIG.get("ktalk_host", ""), bearer)
+    headers["content-type"] = "application/json"
+    payload = build_ktalk_message_payload(body=body, reply_to_event_id=reply_to_event_id)
+    try:
+        response = requests.put(url, headers=headers, json=payload, verify=bool(CONFIG.get("verify_ssl", True)), timeout=int(CONFIG.get("request_timeout", 15)))
+    except RequestException as exc:
+        raise KTalkUnavailableError("Kontur Talk send message failed") from exc
+    if response.status_code != 200:
+        logger.error("KTalk send failed status=%s room_id=%s", response.status_code, room_id)
+        raise KTalkUnavailableError(f"KTalk API returned {response.status_code}")
+    resp_payload = response.json()
+    event_id = str(resp_payload.get("event_id") or "").strip()
+    if not event_id:
+        raise KTalkUnavailableError("KTalk send message failed")
+    return event_id

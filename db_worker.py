@@ -213,3 +213,105 @@ def upsert_user_mappings(records: list[dict[str, Any]]) -> int:
     except Exception as exc:  # noqa: BLE001
         logger.exception("Failed to upsert user mappings")
         raise DatabaseUnavailableError("Database upsert failed") from exc
+
+
+def init_push_messages_table() -> None:
+    table_name = CONFIG["push_messages_table"]
+    sql = f"""
+    CREATE TABLE IF NOT EXISTS {table_name} (
+        id BIGSERIAL PRIMARY KEY,
+        zabbix_event_id TEXT NOT NULL,
+        event_value TEXT NOT NULL,
+        recipient_mention_id TEXT NOT NULL,
+        ktalk_room_id TEXT NOT NULL,
+        ktalk_start_event_id TEXT,
+        ktalk_resolve_event_id TEXT,
+        trigger_name TEXT,
+        host_name TEXT,
+        severity TEXT,
+        event_time TIMESTAMP,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
+        UNIQUE (zabbix_event_id, recipient_mention_id)
+    );
+    """
+    try:
+        with get_db_connection() as conn, conn.cursor() as cur:
+            cur.execute(sql)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Failed to initialize push messages table")
+        raise DatabaseUnavailableError("Database query failed") from exc
+
+
+def get_push_message(zabbix_event_id: str, recipient_mention_id: str) -> dict | None:
+    table_name = CONFIG["push_messages_table"]
+    sql = f"""
+    SELECT * FROM {table_name}
+    WHERE zabbix_event_id = %(zabbix_event_id)s
+      AND recipient_mention_id = %(recipient_mention_id)s
+    LIMIT 1;
+    """
+    try:
+        with get_db_connection() as conn, conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, {"zabbix_event_id": zabbix_event_id, "recipient_mention_id": recipient_mention_id})
+            return cur.fetchone()
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Failed to read push message")
+        raise DatabaseUnavailableError("Database query failed") from exc
+
+
+def save_push_start_message(
+    zabbix_event_id: str,
+    recipient_mention_id: str,
+    ktalk_room_id: str,
+    ktalk_start_event_id: str,
+    trigger_name: str,
+    host_name: str,
+    severity: str,
+    event_time: datetime,
+) -> None:
+    table_name = CONFIG["push_messages_table"]
+    sql = f"""
+    INSERT INTO {table_name} (
+        zabbix_event_id, event_value, recipient_mention_id, ktalk_room_id,
+        ktalk_start_event_id, trigger_name, host_name, severity, event_time, updated_at
+    ) VALUES (
+        %(zabbix_event_id)s, '1', %(recipient_mention_id)s, %(ktalk_room_id)s,
+        %(ktalk_start_event_id)s, %(trigger_name)s, %(host_name)s, %(severity)s, %(event_time)s, now()
+    )
+    ON CONFLICT (zabbix_event_id, recipient_mention_id)
+    DO UPDATE SET
+        event_value = '1',
+        ktalk_room_id = EXCLUDED.ktalk_room_id,
+        ktalk_start_event_id = EXCLUDED.ktalk_start_event_id,
+        trigger_name = EXCLUDED.trigger_name,
+        host_name = EXCLUDED.host_name,
+        severity = EXCLUDED.severity,
+        event_time = EXCLUDED.event_time,
+        updated_at = now();
+    """
+    params = locals()
+    try:
+        with get_db_connection() as conn, conn.cursor() as cur:
+            cur.execute(sql, params)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Failed to save push start message")
+        raise DatabaseUnavailableError("Database upsert failed") from exc
+
+
+def save_push_resolve_message(zabbix_event_id: str, recipient_mention_id: str, ktalk_resolve_event_id: str) -> None:
+    table_name = CONFIG["push_messages_table"]
+    sql = f"""
+    UPDATE {table_name}
+    SET event_value = '0',
+        ktalk_resolve_event_id = %(ktalk_resolve_event_id)s,
+        updated_at = now()
+    WHERE zabbix_event_id = %(zabbix_event_id)s
+      AND recipient_mention_id = %(recipient_mention_id)s;
+    """
+    try:
+        with get_db_connection() as conn, conn.cursor() as cur:
+            cur.execute(sql, locals())
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Failed to save push resolve message")
+        raise DatabaseUnavailableError("Database update failed") from exc

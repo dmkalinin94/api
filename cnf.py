@@ -46,16 +46,23 @@ CONFIG: dict[str, Any] = {
     "api_title": "AD -> KTalk mention resolver",
     "api_version": "1.0.0",
     "api_resolve_path": "/resolve",
+    "api_push_path": "/push",
+    "api_push_secret_token": "change_me",
+    "api_push_token_header": "X-Push-Token",
     "api_query_param_login": "ad_login",
     "api_query_param_mention_id": "ktalk_mention_id",
     "api_bad_request_message": "at least one ad_login or ktalk_mention_id query parameter is required",
     "database_unavailable_message": "Database connection failed",
     "ldap_unavailable_message": "Active Directory connection failed",
     "ktalk_unavailable_message": "Kontur Talk lookup failed",
+    "push_messages_table": "trmetrics.availconf.ktalk_push_messages",
 
     # KTalk API request defaults
     "ktalk_limit": 15,
     "ktalk_user_agent": "autoalerter/1.0",
+    "ktalk_matrix_base_url": "https://chat.ktalk.ru/_matrix/client/r0",
+    "ktalk_create_room_path": "/createRoom",
+    "ktalk_send_message_path": "/rooms/{room_id}/send/m.room.message/{txn_id}",
 }
 
 

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Header, Request
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, field_validator
+import hmac
+from datetime import datetime
 
 from ad_worker import LDAPUnavailableError, fetch_ad_users_batch, find_ad_user_by_ktalk_profile
 from cnf import CONFIG, build_safe_pg_dsn_for_logs, get_logger
@@ -9,9 +12,13 @@ from db_worker import (
     DatabaseUnavailableError,
     fetch_mapped_users_by_logins,
     fetch_mapped_users_by_mention_ids,
+    get_push_message,
+    init_push_messages_table,
+    save_push_resolve_message,
+    save_push_start_message,
     upsert_user_mappings,
 )
-from ktalk_worker import KTalkUnavailableError, fetch_ktalk_profile_by_mention_id, find_ktalk_match_for_ad_user
+from ktalk_worker import KTalkUnavailableError, ensure_direct_room, fetch_ktalk_profile_by_mention_id, find_ktalk_match_for_ad_user, send_ktalk_message
 
 app = FastAPI(
     title=str(CONFIG.get("api_title", "AD -> KTalk mention resolver")),
@@ -79,6 +86,27 @@ def _upsert_record_from_resolved(ad_login: str, ad_user, mention_id: str, ktalk_
         "ktalk_matched": True,
         "ktalk_deactivated": False,
     }
+
+
+class PushPayload(BaseModel):
+    event_id: str
+    event_value: str
+    event_time: str
+    trigger_name: str
+    host_name: str
+    severity: str
+    users: list[str]
+    host_groups: list[str] | None = None
+    operation_data: str | None = None
+    trigger_url: str | None = None
+
+    @field_validator("event_id")
+    @classmethod
+    def _event_id_not_empty(cls, value: str) -> str:
+        value = str(value or "").strip()
+        if not value:
+            raise ValueError("event_id must not be empty")
+        return value
 
 
 @app.on_event("startup")
@@ -362,3 +390,101 @@ def resolve_users(request: Request):
         len(without_ktalk_mention_id),
     )
     return response
+
+
+@app.post(str(CONFIG.get("api_push_path", "/push")))
+def push_event(payload: PushPayload, x_push_token: str | None = Header(default=None, alias=str(CONFIG.get("api_push_token_header", "X-Push-Token")))):
+    expected = str(CONFIG.get("api_push_secret_token", ""))
+    if not x_push_token or not hmac.compare_digest(str(x_push_token), expected):
+        return JSONResponse(status_code=401, content={"status": "error", "error": "unauthorized", "message": "Invalid push token"})
+
+    try:
+        event_time = datetime.strptime(payload.event_time, "%Y.%m.%d %H:%M:%S")
+    except ValueError:
+        return JSONResponse(status_code=400, content={"status": "error", "message": "Invalid event_time format"})
+
+    if payload.event_value not in {"0", "1"}:
+        return JSONResponse(status_code=400, content={"status": "error", "message": "Invalid event_value"})
+
+    severity_map = {"disaster": "Disaster", "high": "High", "average": "Average", "warning": "Warning", "info": "Info", "not classified": "Not classified"}
+    severity = severity_map.get(payload.severity.strip().lower(), "Not classified")
+    users = []
+    for u in payload.users:
+        raw = str(u or "").strip()
+        if raw and raw not in users:
+            users.append(raw)
+    if not users:
+        return JSONResponse(status_code=400, content={"status": "error", "message": "users must not be empty"})
+
+    start_titles = {"Disaster": "🔴 Disaster", "High": "🟤 High", "Average": "🟠 Average", "Warning": "🟡 Warning", "Info": "🔵 Info", "Not classified": "⚪ Not classified"}
+
+    def _build_start_text() -> str:
+        lines = [start_titles[severity], "", f"Время: {payload.event_time}", f"Триггер: {payload.trigger_name}", f"Хост: {payload.host_name}"]
+        if payload.host_groups:
+            groups = ", ".join([g for g in payload.host_groups if str(g).strip()])
+            if groups:
+                lines.append(f"Группы хоста: {groups}")
+        if payload.operation_data and payload.operation_data.strip():
+            lines.append(f"Operation data: {payload.operation_data.strip()}")
+        if payload.trigger_url and payload.trigger_url.strip():
+            lines.extend(["", "Ссылка на триггер:", payload.trigger_url.strip()])
+        lines.extend(["", f"Event ID: {payload.event_id}"])
+        return "\n".join(lines)
+
+    resolve_text = f"🟢 АВАРИЯ ЗАВЕРШЕНА\n\nВремя: {payload.event_time}\nТриггер: {payload.trigger_name}\nХост: {payload.host_name}\nSeverity: {severity}\n\nEvent ID: {payload.event_id}"
+
+    results=[]
+    failed=[]
+    resolved_count=0
+    sent_count=0
+    try:
+        init_push_messages_table()
+        for user in users:
+            try:
+                mention_id = user if user.startswith("@") and ":" in user else None
+                if not mention_id:
+                    rows = fetch_mapped_users_by_logins([normalize_logins([user])[0]])
+                    if rows:
+                        mention_id = list(rows.values())[0].ktalk_mention_id
+                if not mention_id:
+                    failed.append(user)
+                    results.append({"user": user, "status": "not_found", "error": "User was not resolved to ktalk_mention_id"})
+                    continue
+                resolved_count += 1
+                existing = get_push_message(payload.event_id, mention_id)
+                room_id = str(existing.get("ktalk_room_id") if existing else "") or ensure_direct_room(mention_id)
+                if payload.event_value == "1":
+                    if existing and existing.get("ktalk_start_event_id"):
+                        results.append({"user": user, "ktalk_mention_id": mention_id, "status": "already_sent", "ktalk_room_id": room_id, "ktalk_event_id": existing.get("ktalk_start_event_id")})
+                        sent_count += 1
+                        continue
+                    ev = send_ktalk_message(room_id=room_id, body=_build_start_text())
+                    save_push_start_message(payload.event_id, mention_id, room_id, ev, payload.trigger_name, payload.host_name, severity, event_time)
+                    results.append({"user": user, "ktalk_mention_id": mention_id, "status": "sent", "ktalk_room_id": room_id, "ktalk_event_id": ev})
+                    sent_count += 1
+                else:
+                    if existing and existing.get("ktalk_resolve_event_id"):
+                        results.append({"user": user, "ktalk_mention_id": mention_id, "status": "already_resolved", "ktalk_room_id": room_id, "ktalk_event_id": existing.get("ktalk_resolve_event_id")})
+                        sent_count += 1
+                        continue
+                    reply_to = existing.get("ktalk_start_event_id") if existing else None
+                    ev = send_ktalk_message(room_id=room_id, body=resolve_text, reply_to_event_id=reply_to)
+                    if existing:
+                        save_push_resolve_message(payload.event_id, mention_id, ev)
+                    else:
+                        save_push_start_message(payload.event_id, mention_id, room_id, "", payload.trigger_name, payload.host_name, severity, event_time)
+                        save_push_resolve_message(payload.event_id, mention_id, ev)
+                    item={"user": user, "ktalk_mention_id": mention_id, "status": "sent", "ktalk_room_id": room_id, "ktalk_event_id": ev}
+                    if not reply_to:
+                        item["warning"] = "start_message_not_found"
+                    results.append(item)
+                    sent_count += 1
+            except KTalkUnavailableError as exc:
+                failed.append(user)
+                results.append({"user": user, "status": "send_failed", "error": str(exc)})
+    except DatabaseUnavailableError:
+        return JSONResponse(status_code=503, content={"status": "error", "message": "Database connection failed"})
+
+    status_code = 200 if not failed else 502
+    body = {"status": "ok" if not failed else "error", "event_id": payload.event_id, "event_value": payload.event_value, "count_requested_users": len(users), "count_resolved_users": resolved_count, "count_sent": sent_count, "count_failed": len(failed), "results": results, "failed_users": failed}
+    return JSONResponse(status_code=status_code, content=body)
